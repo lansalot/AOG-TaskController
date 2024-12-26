@@ -44,15 +44,12 @@ void signal_handler(int)
 class MyTCServer : public isobus::TaskControllerServer
 {
 public:
-    MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction,
-               std::uint8_t numberBoomsSupported,
-               std::uint8_t numberSectionsSupported,
-               std::uint8_t numberChannelsSupportedForPositionBasedControl,
-               const isobus::TaskControllerOptions &options) : TaskControllerServer(internalControlFunction,
-                                                                                    numberBoomsSupported,
-                                                                                    numberSectionsSupported,
-                                                                                    numberChannelsSupportedForPositionBasedControl,
-                                                                                    options)
+    MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction) : TaskControllerServer(internalControlFunction,
+                                                                                                                1,  // AOG limits to 1 boom
+                                                                                                                64, // AOG limits to 64 sections
+                                                                                                                16, // 16 channels for position based control
+                                                                                                                isobus::TaskControllerOptions()
+                                                                                                                    .with_implement_section_control())
     {
     }
 
@@ -108,8 +105,60 @@ public:
         // This callback lets you know when a client sends a process data acknowledge (PDACK) message to you
     }
 
-    bool on_value_command(std::shared_ptr<isobus::ControlFunction>, std::uint16_t, std::uint16_t, std::int32_t, std::uint8_t &) override
+    bool on_value_command(std::shared_ptr<isobus::ControlFunction> clientControlFunction,
+                          std::uint16_t dataDescriptionIndex,
+                          std::uint16_t elementNumber,
+                          std::int32_t processDataValue,
+                          std::uint8_t &errorCodes) override
     {
+        switch (dataDescriptionIndex)
+        {
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState17_32):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState33_48):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState49_64):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState65_80):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState81_96):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState97_112):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState113_128):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState129_144):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState145_160):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState161_176):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState177_192):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState193_208):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState209_224):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState225_240):
+        case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState241_256):
+        {
+            constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
+            std::uint8_t sectionIndexOffset = NUMBER_SECTIONS_PER_CONDENSED_MESSAGE * static_cast<std::uint8_t>(dataDescriptionIndex - static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16));
+
+            std::vector<bool> sectionActualStates;
+            for (std::uint_fast8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
+            {
+                if ((i + sectionIndexOffset) < NUMBER_OF_SECTIONS)
+                {
+                    bool sectionState = (0x01 == (processDataValue >> (2 * i) & 0x03));
+                    sectionActualStates.push_back(sectionState);
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            std::cout << "Received section states: ";
+            for (std::uint_fast8_t i = 0; i < sectionActualStates.size(); i++)
+            {
+                std::cout << (sectionActualStates[i] ? "1" : "0");
+            }
+            std::cout << std::endl;
+
+            // TODO: Send the section states to AOG via UDP
+        }
+        break;
+        }
+
         return true;
     }
 
@@ -169,12 +218,7 @@ int main()
         return -1;
     }
 
-    MyTCServer server(serverCF,
-                      4,   // Booms
-                      255, // Sections
-                      16,  // Channels
-                      isobus::TaskControllerOptions()
-                          .with_implement_section_control());
+    MyTCServer server(serverCF);
     auto &languageInterface = server.get_language_command_interface();
     languageInterface.set_language_code("en"); // This is the default, but you can change it if you want
     languageInterface.set_country_code("NL");  // This is the default, but you can change it if you want
