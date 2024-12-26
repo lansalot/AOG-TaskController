@@ -23,15 +23,28 @@
 #include "isobus/isobus/can_stack_logger.hpp"
 #include "isobus/isobus/isobus_standard_data_description_indices.hpp"
 #include "isobus/isobus/isobus_task_controller_server.hpp"
+#include "isobus/isobus/isobus_device_descriptor_object_pool_helpers.hpp"
 #include "isobus/hardware_integration/available_can_drivers.hpp"
 #include "isobus/isobus/isobus_preferred_addresses.hpp"
 
 #include "console_logger.cpp"
 #include <bitset>
+#include <map>
+
+constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
+
+enum SectionState : std::uint8_t
+{
+    OFF = 0,          ///< Section is off
+    ON = 1,           ///< Section is on
+    ERROR_SATE = 2,   ///< Section is in an error state
+    NOT_INSTALLED = 3 ///< Section is not installed
+};
 
 using boost::asio::ip::udp;
 
-static constexpr std::uint8_t NUMBER_OF_SECTIONS = 6;
+boost::asio::io_service io_service;
+udp::socket udpConnection(io_service);
 static std::shared_ptr<isobus::ControlFunction> clientTC = nullptr;
 
 static std::atomic_bool running = {true};
@@ -39,6 +52,61 @@ void signal_handler(int)
 {
     running = false;
 }
+
+class ClientState
+{
+public:
+    void set_number_of_sections(std::uint8_t number)
+    {
+        numberOfSections = number;
+        sectionSetpointStates.resize(number);
+        sectionActualStates.resize(number);
+    }
+
+    void set_section_setpoint_state(std::uint8_t section, std::uint8_t state)
+    {
+        if (section < numberOfSections)
+        {
+            sectionSetpointStates[section] = state;
+        }
+    }
+
+    void set_section_actual_state(std::uint8_t section, std::uint8_t state)
+    {
+        if (section < numberOfSections)
+        {
+            sectionActualStates[section] = state;
+        }
+    }
+
+    std::uint8_t get_number_of_sections() const
+    {
+        return numberOfSections;
+    }
+
+    std::uint8_t get_section_setpoint_state(std::uint8_t section) const
+    {
+        if (section < numberOfSections)
+        {
+            return sectionSetpointStates[section];
+        }
+        return SectionState::NOT_INSTALLED;
+    }
+
+    std::uint8_t get_section_actual_state(std::uint8_t section) const
+    {
+        if (section < numberOfSections)
+        {
+            return sectionActualStates[section];
+        }
+        return SectionState::NOT_INSTALLED;
+    }
+
+private:
+    std::uint8_t numberOfSections;
+    std::vector<std::uint8_t> sectionSetpointStates; // 2 bits per section (0 = off, 1 = on, 2 = error, 3 = not installed)
+    std::vector<std::uint8_t> sectionActualStates;   // 2 bits per section (0 = off, 1 = on, 2 = error, 3 = not installed)
+};
 
 // Create the task controller server object, this will handle all the ISOBUS communication for us
 class MyTCServer : public isobus::TaskControllerServer
@@ -95,9 +163,10 @@ public:
         // Your TC's number is your function code + 1, in the range of 1-32.
     }
 
-    void on_client_timeout(std::shared_ptr<isobus::ControlFunction>) override
+    void on_client_timeout(std::shared_ptr<isobus::ControlFunction> partner) override
     {
-        // You can use this function to handle when a client times out (6 Seconds)
+        // Cleanup the client state
+        clients.erase(partner);
     }
 
     void on_process_data_acknowledge(std::shared_ptr<isobus::ControlFunction>, std::uint16_t, std::uint16_t, std::uint8_t, ProcessDataCommands) override
@@ -105,7 +174,7 @@ public:
         // This callback lets you know when a client sends a process data acknowledge (PDACK) message to you
     }
 
-    bool on_value_command(std::shared_ptr<isobus::ControlFunction> clientControlFunction,
+    bool on_value_command(std::shared_ptr<isobus::ControlFunction> partner,
                           std::uint16_t dataDescriptionIndex,
                           std::uint16_t elementNumber,
                           std::int32_t processDataValue,
@@ -130,31 +199,54 @@ public:
         case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState225_240):
         case static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState241_256):
         {
-            constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
             std::uint8_t sectionIndexOffset = NUMBER_SECTIONS_PER_CONDENSED_MESSAGE * static_cast<std::uint8_t>(dataDescriptionIndex - static_cast<std::uint16_t>(isobus::DataDescriptionIndex::ActualCondensedWorkState1_16));
 
-            std::vector<bool> sectionActualStates;
             for (std::uint_fast8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
             {
-                if ((i + sectionIndexOffset) < NUMBER_OF_SECTIONS)
-                {
-                    bool sectionState = (0x01 == (processDataValue >> (2 * i) & 0x03));
-                    sectionActualStates.push_back(sectionState);
-                }
-                else
-                {
-                    break;
-                }
+                clients[partner].set_section_actual_state(i + sectionIndexOffset, (processDataValue >> (2 * i)) & 0x03);
             }
 
-            std::cout << "Received section states: ";
-            for (std::uint_fast8_t i = 0; i < sectionActualStates.size(); i++)
+            // AOG uses 1 bit per section, i.e. 0 = off, 1 = on
+            std::uint8_t numberOfBytes = clients[partner].get_number_of_sections() / 8;
+            if (clients[partner].get_number_of_sections() % 8 > 0)
             {
-                std::cout << (sectionActualStates[i] ? "1" : "0");
+                // Add an extra byte if there are any remaining sections that don't fit in a multiple of 8
+                numberOfBytes++;
+            }
+            std::vector<uint8_t> AOG = {0x80, 0x81, 0x7B, 0xE7, numberOfBytes};
+
+            std::uint8_t sectionIndex = 0;
+            while (sectionIndex < clients[partner].get_number_of_sections())
+            {
+                std::uint8_t byte = 0;
+                for (std::uint8_t i = 0; i < 8; i++)
+                {
+                    if (sectionIndex < clients[partner].get_number_of_sections())
+                    {
+                        byte |= (clients[partner].get_section_actual_state(sectionIndex) == SectionState::ON) << i;
+                        sectionIndex++;
+                    }
+                }
+                AOG.push_back(byte);
+            }
+
+            // add the checksum
+            int16_t CK_A = 0;
+            for (uint8_t i = 2; i < AOG.size() - 1; i++)
+            {
+                CK_A = (CK_A + AOG[i]);
+            }
+            AOG.push_back(CK_A & 0xFF);
+
+            std::cout << "Sending AOG message: " << std::endl;
+            for (const auto &byte : AOG)
+            {
+                std::cout << std::hex << static_cast<int>(byte) << " ";
             }
             std::cout << std::endl;
 
-            // TODO: Send the section states to AOG via UDP
+            udp::endpoint broadcast_endpoint(boost::asio::ip::address_v4::broadcast(), 8888);
+            udpConnection.send_to(boost::asio::buffer(AOG, sizeof(AOG)), broadcast_endpoint);
         }
         break;
         }
@@ -162,10 +254,115 @@ public:
         return true;
     }
 
-    bool store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction>, const std::vector<std::uint8_t> &, bool) override
+    bool store_device_descriptor_object_pool(std::shared_ptr<isobus::ControlFunction> partnerCF, const std::vector<std::uint8_t> &binaryPool, bool) override
     {
+        // Initialize for the partner control function
+        clients[partnerCF] = ClientState();
+
+        isobus::DeviceDescriptorObjectPool pool;
+        pool.set_task_controller_compatibility_level(3);
+        if (pool.deserialize_binary_object_pool(binaryPool.data(), static_cast<std::uint32_t>(binaryPool.size()), partnerCF->get_NAME()))
+        {
+            std::cout << "Successfully deserialized device descriptor object pool." << std::endl;
+            auto implement = isobus::DeviceDescriptorObjectPoolHelper::get_implement_geometry(pool);
+            std::uint8_t numberOfSections = 0;
+
+            std::cout << "Implement geometry: " << std::endl;
+            std::cout << "Number of booms=" << implement.booms.size() << std::endl;
+            for (const auto &boom : implement.booms)
+            {
+                std::cout << "Boom: id=" << static_cast<int>(boom.elementNumber) << std::endl;
+                for (const auto &subBoom : boom.subBooms)
+                {
+                    std::cout << "SubBoom: id=" << static_cast<int>(subBoom.elementNumber) << std::endl;
+                    for (const auto &section : subBoom.sections)
+                    {
+                        numberOfSections++;
+                        std::cout << "Section: id=" << static_cast<int>(section.elementNumber) << std::endl;
+                        std::cout << "X Offset: " << section.xOffset_mm.get() << std::endl;
+                        std::cout << "Y Offset: " << section.yOffset_mm.get() << std::endl;
+                        std::cout << "Z Offset: " << section.zOffset_mm.get() << std::endl;
+                        std::cout << "Width: " << section.width_mm.get() << std::endl;
+                    }
+                }
+                for (const auto &section : boom.sections)
+                {
+                    numberOfSections++;
+                    std::cout << "Section: id=" << static_cast<int>(section.elementNumber) << std::endl;
+                    std::cout << "X Offset: " << section.xOffset_mm.get() << std::endl;
+                    std::cout << "Y Offset: " << section.yOffset_mm.get() << std::endl;
+                    std::cout << "Z Offset: " << section.zOffset_mm.get() << std::endl;
+                    std::cout << "Width: " << section.width_mm.get() << std::endl;
+                }
+            }
+            clients[partnerCF].set_number_of_sections(numberOfSections);
+        }
+        else
+        {
+            std::cout << "Failed to deserialize device descriptor object pool." << std::endl;
+            return false;
+        }
         return true;
     }
+
+    std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> &get_clients()
+    {
+        return clients;
+    }
+
+    void update_section_states(std::vector<bool> &sectionStates)
+    {
+        for (auto &client : clients)
+        {
+            bool requiresUpdate = false;
+            auto &state = client.second;
+            for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
+            {
+                if ((i % 16 == 0) && requiresUpdate)
+                {
+                    std::uint8_t ddiOffset = i / 16;
+                    send_section_setpoint_states(client.first, ddiOffset);
+                    requiresUpdate = false;
+                }
+
+                if (i < sectionStates.size())
+                {
+                    if (sectionStates[i] != (state.get_section_setpoint_state(i) == SectionState::ON))
+                    {
+                        state.set_section_setpoint_state(i, sectionStates[i] ? SectionState::ON : SectionState::OFF);
+                        requiresUpdate = true;
+                    }
+                }
+            }
+            if (requiresUpdate)
+            {
+                std::uint8_t ddiOffset = (state.get_number_of_sections() + 1) / 16;
+                send_section_setpoint_states(client.first, ddiOffset);
+            }
+        }
+    }
+
+private:
+    void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset)
+    {
+        std::uint8_t sectionOffset = ddiOffset * 16;
+        std::uint32_t value = 0;
+        for (std::uint8_t i = 0; i < 16; i++)
+        {
+            value |= (clients[client].get_section_setpoint_state(sectionOffset + i) << (2 * i));
+        }
+
+        std::cout << "Sending setpoint states for DDI offset " << static_cast<int>(ddiOffset) << " with states: ";
+        for (std::uint8_t i = 0; i < 16; i++)
+        {
+            std::cout << static_cast<int>(clients[client].get_section_setpoint_state(sectionOffset + i)) << " ";
+        }
+        std::cout << std::endl;
+
+        send_set_value_and_acknowledge(client, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointCondensedWorkState1_16) + ddiOffset, 2, value);
+    }
+
+    std::map<std::shared_ptr<isobus::ControlFunction>, ClientState> clients;
 };
 
 int main()
@@ -226,13 +423,7 @@ int main()
 
     std::cout << "Task controller server started." << std::endl;
 
-    std::uint32_t lastTime = 0;
-    std::array<bool, NUMBER_OF_SECTIONS> sectionWorkStates{false, false, false, false, false, false};
-    bool requiresUpdate = false;
-
     // Set up the UDP server
-    boost::asio::io_service io_service;
-    udp::socket udpConnection(io_service);
     udpConnection.open(udp::v4());
     udpConnection.set_option(boost::asio::socket_base::broadcast(true));
     udpConnection.non_blocking(true);
@@ -245,29 +436,8 @@ int main()
     uint8_t rxBuffer[512];
     size_t rxIndex = 0;
 
-    std::uint8_t sectionIndex = 0;
     while (running)
     {
-        std::uint32_t currentTime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-
-        if (currentTime - lastTime >= 200)
-        {
-            lastTime = currentTime;
-
-            uint8_t AOG[] = {0x80, 0x81, 0x7B, 0xED, 8, 1, 2, 3, 4, 0, 0, 0, 0, 0xCC};
-
-            // add the checksum
-            int16_t CK_A = 0;
-            for (uint8_t i = 2; i < sizeof(AOG) - 1; i++)
-            {
-                CK_A = (CK_A + AOG[i]);
-            }
-            AOG[sizeof(AOG) - 1] = CK_A;
-
-            udp::endpoint broadcast_endpoint(boost::asio::ip::address_v4::broadcast(), 8889);
-            udpConnection.send_to(boost::asio::buffer(AOG, sizeof(AOG)), broadcast_endpoint);
-        }
-
         // Peek to see if we have any data
         boost::system::error_code ec;
         udp::endpoint sender_endpoint;
@@ -292,17 +462,14 @@ int main()
 
                     if (pgn == 0xEF) // 239 - EF Machine Data
                     {
-                        // We only care about the sections
-                        for (std::uint8_t i = 0; i < NUMBER_OF_SECTIONS; i++)
+                        // We only care about the sections (index + 6)
+                        std::vector<bool> sectionStates;
+                        for (std::uint8_t i = 0; i < len - 2; i++)
                         {
-                            bool newState = rxBuffer[index + 6] & (1 << i);
-                            if (newState != sectionWorkStates[i])
-                            {
-                                printf("Section %d is set to  '%s' by AOG\n", i + 1, newState ? "ON" : "OFF");
-                                sectionWorkStates[i] = newState;
-                                requiresUpdate = true;
-                            }
+                            sectionStates.push_back(rxBuffer[index + 6] & (1 << i));
                         }
+
+                        server.update_section_states(sectionStates);
                         index += len + 1;
                     }
                     else
@@ -335,18 +502,6 @@ int main()
         {
             // Handle other errors
             isobus::CANStackLogger::error("UDP receive error: " + ec.message());
-        }
-
-        if (requiresUpdate)
-        {
-            // Send the new section work states to the client
-            std::uint32_t value = 0;
-            for (std::uint8_t i = 0; i < 6; i++)
-            {
-                value |= (sectionWorkStates[i] ? static_cast<std::uint32_t>(0x01) : static_cast<std::uint32_t>(0x00)) << (2 * i);
-            }
-            server.send_set_value_and_acknowledge(clientTC, static_cast<std::uint16_t>(isobus::DataDescriptionIndex::SetpointCondensedWorkState1_16), 2, value);
-            requiresUpdate = false;
         }
 
         server.update();
