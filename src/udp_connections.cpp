@@ -257,8 +257,7 @@ bool UdpConnections::send(std::uint8_t src, std::uint8_t pgn, std::span<std::uin
 	txBuffer[index++] = PACKET_START & 0xFF;
 	txBuffer[index++] = src;
 	txBuffer[index++] = pgn;
-	//txBuffer[index++] = data.size() - 1;
-	std::copy(data.begin(), data.end(), txBuffer.begin() + index); // sections eg 6 is duplicated in data
+	std::copy(data.begin(), data.end(), txBuffer.begin() + index);
 	index += data.size();
 
 	txBuffer[index] = calculate_crc({ txBuffer.data() + 2, index - 2 });
