@@ -55,6 +55,6 @@ private:
 	 */
 	static std::string get_filename();
 
-	constexpr static std::array<std::uint8_t, 3> DEFAULT_SUBNET = { 192, 168, 5 };
+	constexpr static std::array<std::uint8_t, 3> DEFAULT_SUBNET = { 192, 168, 1 };
 	std::array<std::uint8_t, 3> configuredSubnet = DEFAULT_SUBNET;
 };
