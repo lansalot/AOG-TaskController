@@ -34,6 +34,7 @@
 #include <map>
 #include "console_logger.cpp"
 #include "settings.hpp"
+#include "udp_connections.hpp"
 
 constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
 
@@ -47,18 +48,15 @@ enum SectionState : std::uint8_t
 
 using boost::asio::ip::udp;
 
-boost::asio::io_service io_service;
-udp::socket udpConnection(io_service);
-boost::asio::io_service io_serviceAD;
-udp::socket udpConnectionAD(io_serviceAD);
-
-Settings settings;
-
 static std::atomic_bool running = { true };
 void signal_handler(int)
 {
 	running = false;
 }
+
+auto settings = std::make_shared<Settings>();
+auto ioContext = boost::asio::io_context();
+auto udpConnections = std::make_shared<UdpConnections>(settings, ioContext);
 
 static std::atomic_bool toggleSectionControl = { false };
 
@@ -223,7 +221,7 @@ public:
 	MyTCServer(std::shared_ptr<isobus::InternalControlFunction> internalControlFunction) :
 	  TaskControllerServer(internalControlFunction,
 	                       1, // AOG limits to 1 boom
-	                       64, // AOG limits to 64 sections
+	                       16, // AOG limits to 16 sections of unique width
 	                       16, // 16 channels for position based control
 	                       isobus::TaskControllerOptions()
 	                         .with_implement_section_control(), // We support section control
@@ -401,7 +399,7 @@ public:
 				}
 				std::cout << std::endl;
 
-				std::vector<uint8_t> AOG = { 0x80, 0x81, 0x70, 0x80, clients[partner].get_number_of_sections() }; // 0x700x80 = TC -> AOG, 0x700x00 = AOG -> TC
+				std::vector<uint8_t> data = { clients[partner].get_number_of_sections() };
 
 				std::uint8_t sectionIndex = 0;
 
@@ -409,30 +407,16 @@ public:
 				{
 					if (clients[partner].get_section_actual_state(sectionIndex) == SectionState::ON)
 					{
-						AOG.push_back(1);
+						data.push_back(1);
 					}
 					else
 					{
-						AOG.push_back(0);
+						data.push_back(0);
 					}
 					sectionIndex++;
 				}
 
-				// Add the checksum as we have all data bytes at this point
-				uint8_t CK_A = 0;
-				for (uint8_t i = 2; i < AOG.size(); i++)
-				{
-					CK_A = (CK_A + AOG[i]);
-				}
-				AOG.push_back(CK_A);
-
-				auto subnet = settings.get_subnet();
-				boost::asio::ip::address_v4 listen_address = boost::asio::ip::make_address_v4(std::to_string(subnet[0]) + "." +
-				                                                                              std::to_string(subnet[1]) + "." +
-				                                                                              std::to_string(subnet[2]) + ".255");
-				// better to follow the AOG example of scanning/setting subnets perhaps?
-				udp::endpoint broadcast_endpoint(listen_address, 9999); // AOG listens on 9999
-				udpConnection.send_to(boost::asio::buffer(AOG, sizeof(AOG)), broadcast_endpoint);
+				udpConnections->send(0x70, 0x80, data);
 			}
 			break;
 
@@ -652,64 +636,13 @@ private:
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;
 };
 
-static udp::endpoint get_local_endpoint()
-{
-	auto subnet = settings.get_subnet();
-
-	try
-	{
-		boost::asio::io_context io_context;
-
-		// Retrieve a list of all network interfaces
-		boost::asio::ip::tcp::resolver resolver(io_context);
-		boost::asio::ip::tcp::resolver::query query(boost::asio::ip::host_name(), "");
-		boost::asio::ip::tcp::resolver::iterator endpoints = resolver.resolve(query);
-
-		std::cout << "Available IP addresses:" << std::endl;
-		for (auto it = endpoints; it != boost::asio::ip::tcp::resolver::iterator(); ++it)
-		{
-			boost::asio::ip::address addr = it->endpoint().address();
-			std::cout << "- " << addr.to_string() << std::endl;
-			if (addr.is_v4())
-			{
-				std::string ip_str = addr.to_string();
-
-				// Split the string into parts and check the prefix
-				std::istringstream ip_stream(ip_str);
-				std::string part;
-				std::vector<int> octets;
-
-				while (std::getline(ip_stream, part, '.'))
-				{
-					octets.push_back(std::stoi(part));
-				}
-
-				if (octets.size() == 4 &&
-				    octets[0] == subnet[0] &&
-				    octets[1] == subnet[1] &&
-				    octets[2] == subnet[2])
-				{
-					std::cout << "Local endpoint address: " << addr.to_string() << std::endl;
-					return udp::endpoint(addr, 8888);
-				}
-			}
-		}
-	}
-	catch (std::exception &e)
-	{
-		std::cerr << "Error: " << e.what() << std::endl;
-	}
-	std::cout << "No suitable IP address found that matches the subnet " << int(subnet[0]) << "." << int(subnet[1]) << "." << int(subnet[2]) << ".0, using loopback address." << std::endl;
-	return udp::endpoint(boost::asio::ip::address_v4::loopback(), 8888);
-}
-
 int main()
 {
 	std::thread inputThread(read_auto_mode); // TODO: read from AOG
 
 	std::signal(SIGINT, signal_handler);
 
-	settings.load();
+	settings->load();
 
 	auto canDriver = std::make_shared<isobus::NTCANPlugin>(42);
 	if (nullptr == canDriver)
@@ -768,105 +701,40 @@ int main()
 
 	std::cout << "Task controller server started." << std::endl;
 
-	// Set up the UDP server
-	udpConnection.open(udp::v4());
-	udpConnection.set_option(boost::asio::socket_base::broadcast(true));
-	udpConnection.non_blocking(true);
+	auto packetHandler = [&server, &speedMessagesInterface](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
+		if (src == 0x70 && pgn == 0x00)
+		{
+			// We only care about the sections (index + 6)
+			std::vector<bool> sectionStates;
+			for (std::uint8_t byte : data)
+			{
+				sectionStates.push_back(byte == 1); // no offset now, new PGN
+			}
+			server.update_section_states(sectionStates);
+		}
+		else if (src == 0x7F && pgn == 0xFE) // 254 - Steer Data
+		{
+			std::uint16_t speed = data[0] | (data[1] << 8);
+			std::uint8_t status = data[2];
 
-	udpConnection.bind(get_local_endpoint());
+			// Convert from km/h to mm/s
+			speed = speed * 1E5 / 3600;
 
-	// Set up anoter UDP server for Address Detection
-	udpConnectionAD.open(udp::v4());
-	udpConnectionAD.set_option(boost::asio::socket_base::broadcast(true));
-	udpConnectionAD.non_blocking(true);
-	udp::endpoint local_any_endpoint(boost::asio::ip::address_v4::any(), 8888); // Module Address bind is sent to here
-	udpConnectionAD.bind(local_any_endpoint);
-	std::cout << "udpConnectionAD address: " << local_any_endpoint.address().to_string() << std::endl;
+			speedMessagesInterface.machineSelectedSpeedTransmitData.set_speed_source(isobus::SpeedMessagesInterface::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
+			speedMessagesInterface.machineSelectedSpeedTransmitData.set_machine_direction_of_travel(isobus::SpeedMessagesInterface::MachineDirection::Forward); // TODO: Implement direction
+			speedMessagesInterface.machineSelectedSpeedTransmitData.set_machine_speed(speed);
+			speedMessagesInterface.machineSelectedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
+		}
+	};
+	udpConnections->set_packet_handler(packetHandler);
+	udpConnections->open();
 
-	uint8_t rxBuffer[512];
-	size_t rxIndex = 0;
-	uint8_t rxADBuffer[512];
-	size_t rxADIndex = 0;
+	std::cout << "UDP connections opened." << std::endl;
+
 	while (running)
 	{
-		// Peek to see if we have any data
-		boost::system::error_code ec;
-		udp::endpoint sender_endpoint;
-		// AWRECEIVE
-		size_t bytesReceived = udpConnection.receive_from(boost::asio::buffer(rxBuffer + rxIndex, sizeof(rxBuffer) - rxIndex), sender_endpoint, 0, ec);
-
-		if (ec == boost::asio::error::would_block)
-		{
-			// No data available
-		}
-		else if (!ec)
-		{
-			rxIndex += bytesReceived;
-			std::uint8_t index = 0;
-
-			while (rxIndex >= 8)
-			{
-				if (rxBuffer[index++] == 0x80 && rxBuffer[index++] == 0x81)
-				{
-					std::uint8_t src = rxBuffer[index++];
-					std::uint8_t pgn = rxBuffer[index++];
-					std::uint8_t len = rxBuffer[index++];
-					if (src == 0x70 && pgn == 0x00)
-					{
-						// We only care about the sections (index + 6)
-						std::vector<bool> sectionStates;
-						for (std::uint8_t i = 0; i < len; i++)
-						{
-							sectionStates.push_back(rxBuffer[index++] == 1); // no offset now, new PGN
-						}
-						server.update_section_states(sectionStates);
-					}
-					else if (src == 0x7F && pgn == 0xFE) // 254 - Steer Data
-					{
-						std::uint16_t speed = (rxBuffer[index + 1] << 8) | rxBuffer[index];
-						std::uint8_t status = rxBuffer[index + 2];
-
-						// Convert from km/h to mm/s
-						speed = speed * 1E5 / 3600;
-
-						speedMessagesInterface.machineSelectedSpeedTransmitData.set_speed_source(isobus::SpeedMessagesInterface::MachineSelectedSpeedData::SpeedSource::NavigationBasedSpeed);
-						speedMessagesInterface.machineSelectedSpeedTransmitData.set_machine_direction_of_travel(isobus::SpeedMessagesInterface::MachineDirection::Forward); // TODO: Implement direction
-						speedMessagesInterface.machineSelectedSpeedTransmitData.set_machine_speed(speed);
-						speedMessagesInterface.machineSelectedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
-
-						index += len;
-					}
-					else
-					{
-						// Unknown PGN, reset buffer
-						// std::cout << "Unknown PGN: " << std::hex << static_cast<int>(pgn) << std::endl;
-						rxIndex = 0;
-					}
-				}
-				else
-				{
-					// Unknown start of message, reset buffer
-					// std::cout << "Unknown start of message: " << std::hex << static_cast<int>(rxBuffer[index - 2]) << " " << static_cast<int>(rxBuffer[index - 1]) << std::endl;
-					rxIndex = 0;
-				}
-
-				// Move any remaining data to the front of the buffer
-				if (index < rxIndex)
-				{
-					std::memmove(rxBuffer, rxBuffer + index, rxIndex - index);
-					rxIndex -= index;
-				}
-				else
-				{
-					rxIndex = 0;
-				}
-			}
-		}
-		else
-		{
-			// Handle other errors
-			isobus::CANStackLogger::error("UDP receive error: " + ec.message());
-		}
+		udpConnections->handle_address_detection();
+		udpConnections->handle_incoming_packets();
 
 		server.request_measurement_commands();
 		if (toggleSectionControl)
@@ -884,76 +752,6 @@ int main()
 
 		// Update again in a little bit
 		std::this_thread::sleep_for(std::chrono::milliseconds(5));
-
-		// Check for AOG subnet
-		//  AWRECEIVE
-		bytesReceived = udpConnectionAD.receive_from(boost::asio::buffer(rxADBuffer + rxADIndex, sizeof(rxADBuffer) - rxADIndex), sender_endpoint, 0, ec);
-
-		if (ec == boost::asio::error::would_block)
-		{
-			// No data available
-		}
-		else if (!ec)
-		{
-			//            std::cout << "Check for AOG subnet" << std::endl;
-			std::uint8_t index = 0;
-
-			rxADIndex += bytesReceived;
-			while (rxADIndex >= 8)
-			{
-				if (rxADBuffer[index++] == 0x80 && rxADBuffer[index++] == 0x81) // 128, 129
-				{
-					index = 2;
-					std::uint8_t src = rxADBuffer[index++];
-					std::uint8_t pgn = rxADBuffer[index++];
-					if (src == 0x7F && pgn == 0xC9 && rxADBuffer[index++] == 0x05 // 127 is source, AGIO, 201 is subnet
-					    && rxADBuffer[index++] == 0xC9 && rxADBuffer[index++] == 0xC9)
-					{
-						// 7-8-9 is IP0,IP1,IP2
-						settings.set_subnet({ rxADBuffer[index++], rxADBuffer[index++], rxADBuffer[index++] });
-
-						std::cout << "Subnet from AOG: ";
-						std::cout << int(settings.get_subnet()[0]) << ".";
-						std::cout << int(settings.get_subnet()[1]) << ".";
-						std::cout << int(settings.get_subnet()[2]);
-						std::cout << " rebinding UPD connection " << std::endl;
-						udpConnection.close();
-						udpConnection.open(udp::v4());
-						udpConnection.set_option(boost::asio::socket_base::broadcast(true));
-						udpConnection.non_blocking(true);
-						udpConnection.bind(get_local_endpoint());
-					}
-					else
-					{
-						// Unknown PGN, reset buffer
-						//                        std::cout << "Unknown PGN: " << std::hex << static_cast<int>(pgn) << std::endl;
-						rxADIndex = 0;
-					}
-				}
-				else
-				{
-					// Unknown start of message, reset buffer
-					// std::cout << "Unknown start of message: " << std::hex << static_cast<int>(rxADBuffer[index - 2]) << " " << static_cast<int>(rxADBuffer[index - 1]) << std::endl;
-					rxADIndex = 0;
-				}
-
-				// Move any remaining data to the front of the buffer
-				if (index < rxADIndex)
-				{
-					std::memmove(rxADBuffer, rxADBuffer + index, rxADIndex - index);
-					rxADIndex -= index;
-				}
-				else
-				{
-					rxADIndex = 0;
-				}
-			}
-		}
-		else
-		{
-			// Handle other errors
-			isobus::CANStackLogger::error("UDP receive error: " + ec.message());
-		}
 	}
 
 	inputThread.join();

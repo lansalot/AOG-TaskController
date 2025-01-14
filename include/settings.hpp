@@ -12,6 +12,7 @@
 #include <array>
 #include <string>
 
+/// @brief A class to store/load AOG-TC settings to/from a file
 class Settings
 {
 public:
@@ -32,6 +33,12 @@ public:
 	 * @return The configured subnet
 	 */
 	const std::array<std::uint8_t, 3> &get_subnet() const;
+
+	/**
+	 * @brief Get the configured subnet as a string
+	 * @return The configured subnet as a string
+	 */
+	std::string get_subnet_string() const;
 
 	/**
 	 * @brief Set the configured subnet
