@@ -67,6 +67,11 @@ const std::array<std::uint8_t, 3> &Settings::get_subnet() const
 	return configuredSubnet;
 }
 
+std::string Settings::get_subnet_string() const
+{
+	return std::to_string(configuredSubnet[0]) + '.' + std::to_string(configuredSubnet[1]) + '.' + std::to_string(configuredSubnet[2]) + ".0";
+}
+
 bool Settings::set_subnet(std::array<std::uint8_t, 3> subnet, bool save)
 {
 	configuredSubnet = subnet;
