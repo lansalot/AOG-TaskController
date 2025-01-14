@@ -15,6 +15,7 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <optional>
 
 #include "isobus/hardware_integration/available_can_drivers.hpp"
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
@@ -32,6 +33,7 @@
 #include <bitset>
 #include <map>
 #include "console_logger.cpp"
+#include "settings.hpp"
 
 constexpr std::uint8_t NUMBER_SECTIONS_PER_CONDENSED_MESSAGE = 16;
 
@@ -50,10 +52,7 @@ udp::socket udpConnection(io_service);
 boost::asio::io_service io_serviceAD;
 udp::socket udpConnectionAD(io_serviceAD);
 
-// TODO load these from settings file...
-uint8_t MDL_IP1 = 192;
-uint8_t MDL_IP2 = 168;
-uint8_t MDL_IP3 = 6;
+Settings settings;
 
 static std::atomic_bool running = { true };
 void signal_handler(int)
@@ -427,9 +426,10 @@ public:
 				}
 				AOG.push_back(CK_A);
 
-				boost::asio::ip::address_v4 listen_address = boost::asio::ip::make_address_v4(std::to_string(MDL_IP1) + "." +
-				                                                                              std::to_string(MDL_IP2) + "." +
-				                                                                              std::to_string(MDL_IP3) + ".255");
+				auto subnet = settings.get_subnet();
+				boost::asio::ip::address_v4 listen_address = boost::asio::ip::make_address_v4(std::to_string(subnet[0]) + "." +
+				                                                                              std::to_string(subnet[1]) + "." +
+				                                                                              std::to_string(subnet[2]) + ".255");
 				// better to follow the AOG example of scanning/setting subnets perhaps?
 				udp::endpoint broadcast_endpoint(listen_address, 9999); // AOG listens on 9999
 				udpConnection.send_to(boost::asio::buffer(AOG, sizeof(AOG)), broadcast_endpoint);
@@ -606,55 +606,6 @@ public:
 		}
 	}
 
-	static udp::endpoint get_local_endpoint()
-	{
-		try
-		{
-			boost::asio::io_context io_context;
-
-			// Retrieve a list of all network interfaces
-			boost::asio::ip::tcp::resolver resolver(io_context);
-			boost::asio::ip::tcp::resolver::query query(boost::asio::ip::host_name(), "");
-			boost::asio::ip::tcp::resolver::iterator endpoints = resolver.resolve(query);
-
-			std::cout << "Available IP addresses:" << std::endl;
-			for (auto it = endpoints; it != boost::asio::ip::tcp::resolver::iterator(); ++it)
-			{
-				boost::asio::ip::address addr = it->endpoint().address();
-				std::cout << "- " << addr.to_string() << std::endl;
-				if (addr.is_v4())
-				{
-					std::string ip_str = addr.to_string();
-
-					// Split the string into parts and check the prefix
-					std::istringstream ip_stream(ip_str);
-					std::string part;
-					std::vector<int> octets;
-
-					while (std::getline(ip_stream, part, '.'))
-					{
-						octets.push_back(std::stoi(part));
-					}
-
-					if (octets.size() == 4 &&
-					    octets[0] == MDL_IP1 &&
-					    octets[1] == MDL_IP2 &&
-					    octets[2] == MDL_IP3)
-					{
-						std::cout << "Local endpoint address: " << addr.to_string() << std::endl;
-						return udp::endpoint(addr, 8888);
-					}
-				}
-			}
-		}
-		catch (std::exception &e)
-		{
-			std::cerr << "Error: " << e.what() << std::endl;
-		}
-
-		throw std::runtime_error("Failed to find a suitable local endpoint address.");
-	}
-
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset)
 	{
@@ -701,11 +652,64 @@ private:
 	std::map<std::shared_ptr<isobus::ControlFunction>, std::queue<std::vector<std::uint8_t>>> uploadedPools;
 };
 
+static udp::endpoint get_local_endpoint()
+{
+	auto subnet = settings.get_subnet();
+
+	try
+	{
+		boost::asio::io_context io_context;
+
+		// Retrieve a list of all network interfaces
+		boost::asio::ip::tcp::resolver resolver(io_context);
+		boost::asio::ip::tcp::resolver::query query(boost::asio::ip::host_name(), "");
+		boost::asio::ip::tcp::resolver::iterator endpoints = resolver.resolve(query);
+
+		std::cout << "Available IP addresses:" << std::endl;
+		for (auto it = endpoints; it != boost::asio::ip::tcp::resolver::iterator(); ++it)
+		{
+			boost::asio::ip::address addr = it->endpoint().address();
+			std::cout << "- " << addr.to_string() << std::endl;
+			if (addr.is_v4())
+			{
+				std::string ip_str = addr.to_string();
+
+				// Split the string into parts and check the prefix
+				std::istringstream ip_stream(ip_str);
+				std::string part;
+				std::vector<int> octets;
+
+				while (std::getline(ip_stream, part, '.'))
+				{
+					octets.push_back(std::stoi(part));
+				}
+
+				if (octets.size() == 4 &&
+				    octets[0] == subnet[0] &&
+				    octets[1] == subnet[1] &&
+				    octets[2] == subnet[2])
+				{
+					std::cout << "Local endpoint address: " << addr.to_string() << std::endl;
+					return udp::endpoint(addr, 8888);
+				}
+			}
+		}
+	}
+	catch (std::exception &e)
+	{
+		std::cerr << "Error: " << e.what() << std::endl;
+	}
+	std::cout << "No suitable IP address found that matches the subnet " << int(subnet[0]) << "." << int(subnet[1]) << "." << int(subnet[2]) << ".0, using loopback address." << std::endl;
+	return udp::endpoint(boost::asio::ip::address_v4::loopback(), 8888);
+}
+
 int main()
 {
 	std::thread inputThread(read_auto_mode); // TODO: read from AOG
 
 	std::signal(SIGINT, signal_handler);
+
+	settings.load();
 
 	auto canDriver = std::make_shared<isobus::NTCANPlugin>(42);
 	if (nullptr == canDriver)
@@ -769,18 +773,15 @@ int main()
 	udpConnection.set_option(boost::asio::socket_base::broadcast(true));
 	udpConnection.non_blocking(true);
 
-	udpConnection.bind(MyTCServer::get_local_endpoint());
+	udpConnection.bind(get_local_endpoint());
 
 	// Set up anoter UDP server for Address Detection
 	udpConnectionAD.open(udp::v4());
 	udpConnectionAD.set_option(boost::asio::socket_base::broadcast(true));
 	udpConnectionAD.non_blocking(true);
 	udp::endpoint local_any_endpoint(boost::asio::ip::address_v4::any(), 8888); // Module Address bind is sent to here
-	std::cout << "udpConnectionAD " << std::endl;
 	udpConnectionAD.bind(local_any_endpoint);
-
-std:
-	cout << "udpConnectionAD address: " << local_any_endpoint.address().to_string() << std::endl;
+	std::cout << "udpConnectionAD address: " << local_any_endpoint.address().to_string() << std::endl;
 
 	uint8_t rxBuffer[512];
 	size_t rxIndex = 0;
@@ -909,20 +910,18 @@ std:
 					    && rxADBuffer[index++] == 0xC9 && rxADBuffer[index++] == 0xC9)
 					{
 						// 7-8-9 is IP0,IP1,IP2
-						MDL_IP1 = static_cast<int>(rxADBuffer[index++]);
-						MDL_IP2 = static_cast<int>(rxADBuffer[index++]);
-						MDL_IP3 = static_cast<int>(rxADBuffer[index++]);
+						settings.set_subnet({ rxADBuffer[index++], rxADBuffer[index++], rxADBuffer[index++] });
 
 						std::cout << "Subnet from AOG: ";
-						std::cout << static_cast<int>(MDL_IP1) << ".";
-						std::cout << static_cast<int>(MDL_IP2) << ".";
-						std::cout << static_cast<int>(MDL_IP3);
+						std::cout << int(settings.get_subnet()[0]) << ".";
+						std::cout << int(settings.get_subnet()[1]) << ".";
+						std::cout << int(settings.get_subnet()[2]);
 						std::cout << " rebinding UPD connection " << std::endl;
 						udpConnection.close();
 						udpConnection.open(udp::v4());
 						udpConnection.set_option(boost::asio::socket_base::broadcast(true));
 						udpConnection.non_blocking(true);
-						udpConnection.bind(MyTCServer::get_local_endpoint());
+						udpConnection.bind(get_local_endpoint());
 					}
 					else
 					{

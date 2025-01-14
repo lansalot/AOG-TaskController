@@ -34,17 +34,23 @@ FetchContent_Declare(
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(isobus)
 
+FetchContent_Declare(
+  json
+  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
+FetchContent_MakeAvailable(json)
+
 find_package(Threads REQUIRED)
 
 file(GLOB_RECURSE SRC_FILES ${CMAKE_CURRENT_LIST_DIR}/src/*.cpp)
 add_executable(AOGTaskController ${SRC_FILES})
 
-target_compile_features(AOGTaskController PUBLIC cxx_std_11)
+target_compile_features(AOGTaskController PUBLIC cxx_std_20)
 set_target_properties(AOGTaskController PROPERTIES CXX_EXTENSIONS OFF)
 
 target_include_directories(AOGTaskController
                            PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 
 target_link_libraries(
-  AOGTaskController PRIVATE isobus::Isobus isobus::HardwareIntegration
-                            Threads::Threads isobus::Utility Boost::asio)
+  AOGTaskController
+  PRIVATE isobus::Isobus isobus::HardwareIntegration Threads::Threads
+          isobus::Utility Boost::asio nlohmann_json::nlohmann_json)
