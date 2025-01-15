@@ -710,6 +710,12 @@ int main()
 
 			server.update_section_states(sectionStates);
 		}
+		else if (src == 0x7F && pgn == 0xF1) // 241 - Section Control
+		{
+			std::uint8_t sectionControlState = data[0];
+			std::cout << "Received request from AOG to change section control state to " << (sectionControlState == 1 ? "enabled" : "disabled") << std::endl;
+			server.update_section_control_enabled(sectionControlState == 1);
+		}
 	};
 	udpConnections->set_packet_handler(packetHandler);
 	udpConnections->open();
@@ -758,7 +764,7 @@ int main()
 					}
 					data.push_back(byte);
 				}
-				udpConnections->send(0x7F, 0xF0, data);
+				udpConnections->send(0x80, 0xF0, data);
 			}
 			lastHeartbeatTransmit = isobus::SystemTiming::get_timestamp_ms();
 		}
