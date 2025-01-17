@@ -532,13 +532,20 @@ public:
 	{
 		for (auto &client : clients)
 		{
-			bool requiresUpdate = false;
 			auto &state = client.second;
+			if (!state.is_section_control_enabled())
+			{
+				// According to standard, the section setpoint states should only be sent when in auto mode
+				return;
+			}
+
+			bool requiresUpdate = false;
 			for (std::uint8_t i = 0; i < state.get_number_of_sections(); i++)
 			{
-				if ((i % 16 == 0) && requiresUpdate)
+				if ((i % NUMBER_SECTIONS_PER_CONDENSED_MESSAGE == 0) && requiresUpdate)
 				{
-					std::uint8_t ddiOffset = i / 16;
+					// Send the previous 16 sections
+					std::uint8_t ddiOffset = (i / NUMBER_SECTIONS_PER_CONDENSED_MESSAGE) - 1;
 					send_section_setpoint_states(client.first, ddiOffset);
 					requiresUpdate = false;
 				}
@@ -554,7 +561,7 @@ public:
 			}
 			if (requiresUpdate)
 			{
-				std::uint8_t ddiOffset = (state.get_number_of_sections() + 1) / 16;
+				std::uint8_t ddiOffset = state.get_number_of_sections() / NUMBER_SECTIONS_PER_CONDENSED_MESSAGE;
 				send_section_setpoint_states(client.first, ddiOffset);
 			}
 		}
@@ -575,12 +582,6 @@ public:
 private:
 	void send_section_setpoint_states(std::shared_ptr<isobus::ControlFunction> client, std::uint8_t ddiOffset)
 	{
-		if (!clients[client].is_section_control_enabled())
-		{
-			// According to standard, the section setpoint states should only be sent when in auto mode
-			return;
-		}
-
 		std::uint8_t sectionOffset = ddiOffset * NUMBER_SECTIONS_PER_CONDENSED_MESSAGE;
 		std::uint32_t value = 0;
 		for (std::uint8_t i = 0; i < NUMBER_SECTIONS_PER_CONDENSED_MESSAGE; i++)
