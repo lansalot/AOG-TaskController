@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project("AOGTaskController")
+project("AOG-TaskController")
 
 set(BUILD_EXAMPLES OFF)
 set(BUILD_TESTING OFF)
@@ -36,21 +36,70 @@ FetchContent_MakeAvailable(isobus)
 
 FetchContent_Declare(
   json
-  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
+  URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(json)
 
 find_package(Threads REQUIRED)
 
 file(GLOB_RECURSE SRC_FILES ${CMAKE_CURRENT_LIST_DIR}/src/*.cpp)
-add_executable(AOGTaskController ${SRC_FILES})
+add_executable("AOG-TaskController" ${SRC_FILES})
 
-target_compile_features(AOGTaskController PUBLIC cxx_std_20)
-set_target_properties(AOGTaskController PROPERTIES CXX_EXTENSIONS OFF)
+target_compile_features("AOG-TaskController" PUBLIC cxx_std_20)
+set_target_properties("AOG-TaskController" PROPERTIES CXX_EXTENSIONS OFF)
+set_target_properties("AOG-TaskController" PROPERTIES WIN32_EXECUTABLE TRUE)
 
-target_include_directories(AOGTaskController
+target_include_directories("AOG-TaskController"
                            PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
 
 target_link_libraries(
-  AOGTaskController
+  "AOG-TaskController"
   PRIVATE isobus::Isobus isobus::HardwareIntegration Threads::Threads
           isobus::Utility Boost::asio nlohmann_json::nlohmann_json)
+
+install(TARGETS "AOG-TaskController" RUNTIME DESTINATION bin
+                                             COMPONENT applications)
+
+add_custom_command(
+  TARGET "AOG-TaskController"
+  POST_BUILD
+  COMMENT "Copying icon.ico to the binary directory"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_if_different
+    ${CMAKE_CURRENT_LIST_DIR}/resources/icon.ico
+    "$<TARGET_FILE_DIR:AOG-TaskController>"
+  VERBATIM)
+
+install(
+  FILES ${CMAKE_CURRENT_LIST_DIR}/resources/icon.ico
+  DESTINATION bin
+  COMPONENT applications)
+
+set(CPACK_PACKAGE_NAME "AOG-TaskController")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ISOBUS-TC for AOG")
+set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_PACKAGE_VERSION_MAJOR "1")
+set(CPACK_PACKAGE_VERSION_MINOR "0")
+set(CPACK_PACKAGE_VERSION_PATCH "0")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "AOG-TaskController")
+set(CPACK_COMPONENTS_ALL applications)
+set(CPACK_COMPONENT_APPLICATIONS_DISPLAY_NAME "AOG-TaskController")
+set(CPACK_COMPONENT_APPLICATIONS_DESCRIPTION
+    "An ISOBUS task controller for the AgOpenGPS project")
+set(CPACK_PACKAGE_CONTACT "daan@steenbergenfarming.nl")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_LIST_DIR}/LICENSE")
+set(CPACK_PACKAGE_EXECUTABLES "AOG-TaskController" "AOG-TaskController")
+set(CPACK_ALL_INSTALL_TYPES Full)
+set(CPACK_COMPONENT_LIBRARIES_INSTALL_TYPES Full)
+set(CPACK_COMPONENT_APPLICATIONS_INSTALL_TYPES Full)
+set(CPACK_NSIS_INSTALLED_ICON_NAME ${CMAKE_CURRENT_LIST_DIR}/resources/icon.ico)
+set(CPACK_NSIS_CONTACT ${CPACK_PACKAGE_CONTACT})
+set(CPACK_NSIS_MUI_ICON ${CPACK_NSIS_INSTALLED_ICON_NAME})
+set(CPACK_NSIS_MUI_UNICON ${CPACK_NSIS_INSTALLED_ICON_NAME})
+set(CPACK_NSIS_DISPLAY_NAME "AOG-TaskController")
+set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT applications)
+include(InstallRequiredSystemLibraries)
+
+# Must be after the last CPACK macros
+include(CPack)
