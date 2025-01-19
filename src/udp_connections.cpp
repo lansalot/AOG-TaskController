@@ -269,7 +269,14 @@ bool UdpConnections::send(std::uint8_t src, std::uint8_t pgn, std::span<std::uin
 	                                                                                 std::to_string(subnet[2]) + ".255");
 
 	udp::endpoint broadcast_endpoint(broadcast_address, 9999);
-	udpConnection.send_to(boost::asio::buffer(txBuffer, index + 1), broadcast_endpoint);
-
+	try
+	{
+		udpConnection.send_to(boost::asio::buffer(txBuffer, index + 1), broadcast_endpoint);
+	}
+	catch (const std::exception &e)
+	{
+		std::cerr << "Error while sending data: " << e.what() << std::endl;
+		return false;
+	}
 	return true;
 }
