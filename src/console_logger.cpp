@@ -15,51 +15,31 @@ public:
 		{
 			case LoggingLevel::Debug:
 			{
-				std::cout << "["
-				          << "\033[1;36m"
-				          << "Debug"
-				          << "\033[0m"
-				          << "]";
+				std::cout << "[Debug]";
 			}
 			break;
 
 			case LoggingLevel::Info:
 			{
-				std::cout << "["
-				          << "\033[1;32m"
-				          << "Info"
-				          << "\033[0m"
-				          << "]";
+				std::cout << "[Info]";
 			}
 			break;
 
 			case LoggingLevel::Warning:
 			{
-				std::cout << "["
-				          << "\033[1;33m"
-				          << "Warn"
-				          << "\033[0m"
-				          << "]";
+				std::cout << "[Warn]";
 			}
 			break;
 
 			case LoggingLevel::Error:
 			{
-				std::cout << "["
-				          << "\033[1;31m"
-				          << "Error"
-				          << "\033[0m"
-				          << "]";
+				std::cout << "[Error]";
 			}
 			break;
 
 			case LoggingLevel::Critical:
 			{
-				std::cout << "["
-				          << "\033[1;35m"
-				          << "Critical"
-				          << "\033[0m"
-				          << "]";
+				std::cout << "[Critical]";
 			}
 			break;
 		}

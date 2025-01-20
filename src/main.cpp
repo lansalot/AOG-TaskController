@@ -1,70 +1,21 @@
-#include "app.cpp"
+#include "app.hpp"
 
 #include <windows.h>
 
 #include <shellapi.h>
+#include <iostream>
 #include <string>
 
 #define TRAY_ICON_ID 1
-#define WM_TRAY_ICON (WM_USER + 1)
-
-HINSTANCE hInstance;
-NOTIFYICONDATA notifyIconData;
 static std::atomic_bool running = { true };
-
-// Function to add tray icon
-void AddTrayIcon(HWND hwnd)
-{
-	memset(&notifyIconData, 0, sizeof(NOTIFYICONDATA));
-	notifyIconData.cbSize = sizeof(NOTIFYICONDATA);
-	notifyIconData.hWnd = hwnd;
-	notifyIconData.uID = TRAY_ICON_ID;
-	notifyIconData.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-	notifyIconData.uCallbackMessage = WM_TRAY_ICON;
-	notifyIconData.hIcon = (HICON)LoadImage(NULL, "icon.ico", IMAGE_ICON, 128, 128, LR_LOADFROMFILE);
-	strcpy_s(notifyIconData.szTip, "AOG Task Controller");
-
-	Shell_NotifyIcon(NIM_ADD, &notifyIconData);
-}
-
-void RemoveTrayIcon()
-{
-	Shell_NotifyIcon(NIM_DELETE, &notifyIconData);
-}
-
-void ShowContextMenu(HWND hwnd)
-{
-	POINT cursorPos;
-	GetCursorPos(&cursorPos);
-
-	HMENU hMenu = CreatePopupMenu();
-	AppendMenu(hMenu, MF_STRING, 1, "Exit");
-
-	SetForegroundWindow(hwnd); // Required for the menu to work properly
-	int command = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, cursorPos.x, cursorPos.y, 0, hwnd, NULL);
-	DestroyMenu(hMenu);
-
-	if (command == 1) // Exit command
-	{
-		running = false;
-	}
-}
 
 // Window procedure to handle messages
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	switch (message)
 	{
-		case WM_TRAY_ICON:
-			if (lParam == WM_RBUTTONDOWN) // Right-click on tray icon
-			{
-				ShowContextMenu(hwnd);
-			}
-			break;
-
-		case WM_DESTROY:
-			RemoveTrayIcon();
-			PostQuitMessage(0);
+		case WM_CLOSE:
+			running = false;
 			break;
 
 		default:
@@ -73,24 +24,47 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	return 0;
 }
 
+std::vector<std::wstring> ParseCommandLineArguments()
+{
+	int argc;
+	LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+	std::vector<std::wstring> arguments;
+	if (argv)
+	{
+		for (int i = 0; i < argc; ++i)
+		{
+			arguments.push_back(argv[i]);
+		}
+		LocalFree(argv);
+	}
+	return arguments;
+}
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)
 {
+	auto arguments = ParseCommandLineArguments();
+
+	// Print or use the arguments (for debugging or logic)
+	for (const auto &arg : arguments)
+	{
+		// Replace this with logic to handle specific arguments
+		std::wcout << L"Argument: " << arg << std::endl;
+	}
+
 	WNDCLASS wc = { 0 };
 	wc.lpfnWndProc = WndProc;
 	wc.hInstance = hInstance;
 	wc.lpszClassName = TEXT("AOG-TaskController");
 	RegisterClass(&wc);
 
-	HWND hwnd = CreateWindowEx(
-	  0, "AOG-TaskController", NULL, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInstance, NULL);
+	HWND hwnd = CreateWindowEx(WS_EX_TOOLWINDOW, wc.lpszClassName, TEXT("AOG-TaskController"), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 300, 200, NULL, NULL, hInstance, NULL);
 	if (!hwnd)
 	{
 		return -1;
 	}
+	ShowWindow(hwnd, SW_SHOWMINNOACTIVE); // Little hack: Keep the window hidden, but still allows AOG (or other applications) to gracefully close it
 
-	AddTrayIcon(hwnd);
-
-	AppTC app;
+	Application app;
 	app.initialize();
 
 	MSG msg;
@@ -107,6 +81,5 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 	// Clean up
 	app.stop();
-	RemoveTrayIcon();
 	return 0;
 }
