@@ -273,9 +273,9 @@ bool UdpConnections::send(std::uint8_t src, std::uint8_t pgn, std::span<std::uin
 	{
 		udpConnection.send_to(boost::asio::buffer(txBuffer, index + 1), broadcast_endpoint);
 	}
-	catch (const std::exception &e)
+	catch (const boost::system::system_error &e)
 	{
-		std::cerr << "Error while sending data: " << e.what() << std::endl;
+		// Probably wrong subnet, ignore
 		return false;
 	}
 	return true;

@@ -75,6 +75,36 @@ install(
   DESTINATION bin
   COMPONENT applications)
 
+add_custom_command(
+  TARGET AOG-TaskController
+  POST_BUILD
+  COMMENT "Copying PCANBasic.dll to the build directory"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_if_different
+    ${CMAKE_CURRENT_LIST_DIR}/lib/PCANBasic.dll
+    "$<TARGET_FILE_DIR:AOG-TaskController>"
+  VERBATIM)
+
+install(
+  FILES ${CMAKE_CURRENT_LIST_DIR}/lib/PCANBasic.dll
+  DESTINATION bin
+  COMPONENT applications)
+
+add_custom_command(
+  TARGET AOG-TaskController
+  POST_BUILD
+  COMMENT "Copying InnoMakerUsb2CanLib.dll to the build directory"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_if_different
+    ${CMAKE_CURRENT_LIST_DIR}/lib/InnoMakerUsb2CanLib.dll
+    "$<TARGET_FILE_DIR:AOG-TaskController>"
+  VERBATIM)
+
+install(
+  FILES ${CMAKE_CURRENT_LIST_DIR}/lib/InnoMakerUsb2CanLib.dll
+  DESTINATION bin
+  COMPONENT applications)
+
 set(CPACK_PACKAGE_NAME "AOG-TaskController")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ISOBUS-TC for AOG")
 set(CPACK_PACKAGE_VENDOR "")
@@ -98,6 +128,8 @@ set(CPACK_NSIS_CONTACT ${CPACK_PACKAGE_CONTACT})
 set(CPACK_NSIS_MUI_ICON ${CMAKE_CURRENT_LIST_DIR}/resources/icon.ico)
 set(CPACK_NSIS_MUI_UNICON ${CPACK_NSIS_MUI_ICON})
 set(CPACK_NSIS_DISPLAY_NAME "AOG-TaskController")
+set(CPACK_NSIS_EXTRA_INSTALL_COMMANDS
+    "Delete $SMPROGRAMS\\$STARTMENU_FOLDER\\AOG-TaskController.lnk")
 set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
 set(CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT applications)
 include(InstallRequiredSystemLibraries)

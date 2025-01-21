@@ -58,6 +58,12 @@ std::vector<std::string> ParseCommandLine(LPSTR lpCmdLine)
 	return arguments;
 }
 
+enum class CANAdapter
+{
+	NONE,
+	ADAPTER_PCAN_USB,
+};
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nShowCmd)
 {
 	std::shared_ptr<isobus::CANHardwarePlugin> canDriver;
@@ -69,6 +75,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		std::cout << arg.c_str() << " ";
 	}
 	std::cout << std::endl;
+
+	auto canAdapter = CANAdapter::NONE;
+	std::string canChannel;
 
 	// Parse command line options
 	for (std::string arg : arguments)
@@ -93,7 +102,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		{
 			if (_stricmp("pcan-usb", value.c_str()) == 0)
 			{
-				canDriver = std::make_shared<isobus::PCANBasicWindowsPlugin>(PCAN_USBBUS1);
+				canAdapter = CANAdapter::ADAPTER_PCAN_USB;
 			}
 			else
 			{
@@ -101,7 +110,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 				return -1;
 			}
 		}
+		else if (_strcmpi("--can_channel", key.c_str()) == 0)
+		{
+			canChannel = value;
+		}
 	}
+
+	switch (canAdapter)
+	{
+		case CANAdapter::ADAPTER_PCAN_USB:
+		{
+			canDriver = std::make_shared<isobus::PCANBasicWindowsPlugin>(PCAN_USBBUS1 - 1 + std::stoi(canChannel));
+			break;
+		}
+		default:
+		{
+			std::cout << "No CAN adapter selected, exiting" << std::endl;
+			return -1;
+		}
+	}
+
 	WNDCLASS wc = { 0 };
 	wc.lpfnWndProc = WndProc;
 	wc.hInstance = hInstance;
