@@ -11,6 +11,7 @@
 #include <boost/asio.hpp>
 #include <memory>
 
+#include "isobus/hardware_integration/can_hardware_plugin.hpp"
 #include "isobus/isobus/isobus_speed_distance_messages.hpp"
 
 #include "settings.hpp"
@@ -20,6 +21,8 @@
 class Application
 {
 public:
+	Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver);
+
 	bool initialize();
 	bool update();
 	void stop();
@@ -29,6 +32,7 @@ private:
 	boost::asio::io_context ioContext = boost::asio::io_context();
 	std::shared_ptr<UdpConnections> udpConnections = std::make_shared<UdpConnections>(settings, ioContext);
 
+	std::shared_ptr<isobus::CANHardwarePlugin> canDriver;
 	std::shared_ptr<MyTCServer> tcServer;
 	std::shared_ptr<isobus::SpeedMessagesInterface> speedMessagesInterface;
 };

@@ -19,11 +19,14 @@
 
 using boost::asio::ip::udp;
 
+Application::Application(std::shared_ptr<isobus::CANHardwarePlugin> canDriver) :
+  canDriver(canDriver)
+{
+}
+
 bool Application::initialize()
 {
 	settings->load();
-
-	auto canDriver = std::make_shared<isobus::NTCANPlugin>(42);
 	if (nullptr == canDriver)
 	{
 		std::cout << "Unable to find a CAN driver. Please make sure the selected driver is installed." << std::endl;
