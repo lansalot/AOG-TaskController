@@ -82,7 +82,10 @@ bool Application::initialize()
 
 	std::cout << "Task controller server started." << std::endl;
 
-	auto packetHandler = [this](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
+	static std::uint8_t xteSid = 0;
+	static std::uint32_t lastXteTransmit = 0;
+
+	auto packetHandler = [this, serverCF](std::uint8_t src, std::uint8_t pgn, std::span<std::uint8_t> data) {
 		if (src == 0x7F && pgn == 0xFE) // 254 - Steer Data
 		{
 			std::uint16_t speed = data[0] | (data[1] << 8);
@@ -95,6 +98,28 @@ bool Application::initialize()
 			speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_direction_of_travel(isobus::SpeedMessagesInterface::MachineDirection::Forward); // TODO: Implement direction
 			speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_speed(speed);
 			speedMessagesInterface->machineSelectedSpeedTransmitData.set_machine_distance(0); // TODO: Implement distance
+
+			std::int32_t xte = (data[5] - 127) * 2;
+			static const std::uint8_t xteMode = 0b00000001;
+			xteSid = xteSid % 253 + 1;
+
+			std::array<std::uint8_t, 8> xteData = {
+				xteSid, // Sequence ID
+				xteMode | 0b00110000 | (status == 1 ? 0b00000000 : 0b01000000), // XTE mode (4 bits) + Reserved (2 bits set to 1) + Navigation Terminated (2 bits)
+				static_cast<std::uint8_t>(xte & 0xFF), // XTE LSB
+				static_cast<std::uint8_t>((xte >> 8) & 0xFF), // XTE
+				static_cast<std::uint8_t>((xte >> 16) & 0xFF), // XTE
+				static_cast<std::uint8_t>((xte >> 24) & 0xFF), // XTE MSB
+				0xFF, // Reserved byte 1 (all bits set to 1)
+				0xFF // Reserved byte 2 (all bits set to 1)
+			};
+			if (isobus::SystemTiming::time_expired_ms(lastXteTransmit, 1000)) // Transmit every second
+			{
+				if (isobus::CANNetworkManager::CANNetwork.send_can_message(0x1F903, xteData.data(), xteData.size(), serverCF))
+				{
+					lastXteTransmit = isobus::SystemTiming::get_timestamp_ms();
+				}
+			}
 
 			// TODO: hack to get desired section states. probably want to make a new pgn later when we need more than 16 sections
 			std::vector<bool> sectionStates;

@@ -139,7 +139,7 @@ void UdpConnections::handle_incoming_packets()
 			else
 			{
 				// Unknown start of message, reset buffer
-				std::cout << "Unknown start of message: 0x" << std::hex << start << std::endl;
+				std::cout << "Unknown start of message: 0x" << std::hex << start << std::dec << std::endl;
 				rxIndex = 0;
 			}
 
@@ -226,7 +226,7 @@ void UdpConnections::handle_address_detection()
 			else
 			{
 				// Unknown start of message, reset buffer
-				std::cout << "Unknown start of message: 0x" << std::hex << start << std::endl;
+				std::cout << "Unknown start of message: 0x" << std::hex << start << std::dec << std::endl;
 				rxIndex = 0;
 			}
 
