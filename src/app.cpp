@@ -72,6 +72,7 @@ bool Application::initialize()
 	languageInterface.set_language_code("en"); // This is the default, but you can change it if you want
 	languageInterface.set_country_code("US"); // This is the default, but you can change it if you want
 	tcServer->initialize();
+	tcServer->set_task_totals_active(true); // TODO: make this dynamic based on status in AOG
 
 	// Initialize speed and distance messages
 	speedMessagesInterface = std::make_unique<isobus::SpeedMessagesInterface>(serverCF, true, true, true, false); //TODO: make configurable whether to send these messages
